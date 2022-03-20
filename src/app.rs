@@ -1,36 +1,51 @@
-use eframe::{egui, epi};
+use eframe::{egui, epaint::FontFamily, epi};
+
+use crate::arg::Args;
+use crate::gap_buffer::GapBuffer;
+use clap::Parser;
+use std::error::Error;
 
 /// We derive Deserialize/Serialize so we can persist app state on shutdown.
 #[cfg_attr(feature = "persistence", derive(serde::Deserialize, serde::Serialize))]
 #[cfg_attr(feature = "persistence", serde(default))] // if we add new fields, give them default values when deserializing old state
-pub struct TemplateApp {
-    // Example stuff:
-    label: String,
-
-    // this how you opt-out of serialization of a member
-    #[cfg_attr(feature = "persistence", serde(skip))]
-    value: f32,
+pub struct MainApp {
+    buffer: GapBuffer,
 }
 
-impl Default for TemplateApp {
+impl MainApp {
+    pub fn setup(&mut self) -> Result<(), Box<dyn Error>> {
+        let args = Args::parse();
+        println!("{:?}", args);
+
+        let file_content = std::fs::read_to_string(args.file)?;
+
+        let buffer = GapBuffer::from_string(file_content);
+
+        println!("{:?}", buffer);
+
+        self.buffer = buffer;
+
+        Ok(())
+    }
+}
+
+impl Default for MainApp {
     fn default() -> Self {
         Self {
-            // Example stuff:
-            label: "Hello World!".to_owned(),
-            value: 2.7,
+            buffer: GapBuffer::default(),
         }
     }
 }
 
-impl epi::App for TemplateApp {
+impl epi::App for MainApp {
     fn name(&self) -> &str {
-        "eframe template"
+        "🍉watermelon"
     }
 
     /// Called once before the first frame.
     fn setup(
         &mut self,
-        _ctx: &egui::Context,
+        ctx: &egui::Context,
         _frame: &epi::Frame,
         _storage: Option<&dyn epi::Storage>,
     ) {
@@ -40,6 +55,37 @@ impl epi::App for TemplateApp {
         if let Some(storage) = _storage {
             *self = epi::get_value(storage, epi::APP_KEY).unwrap_or_default()
         }
+
+        let mut fonts = egui::FontDefinitions::default();
+
+        let fira_code =
+            egui::FontData::from_static(include_bytes!("../fonts/FiraCode-Regular.ttf"));
+        fonts.font_data.insert("fira_code".to_owned(), fira_code);
+
+        let chinese = egui::FontData::from_static(include_bytes!("../fonts/wqy-zenhei.ttc"));
+        fonts.font_data.insert("wqy".to_owned(), chinese);
+
+        fonts
+            .families
+            .entry(egui::FontFamily::Monospace)
+            .or_default()
+            .insert(0, "fira_code".to_owned());
+
+        fonts
+            .families
+            .entry(egui::FontFamily::Monospace)
+            .or_default()
+            .push("wqy".to_owned());
+
+        ctx.set_fonts(fonts);
+
+        let mut style: egui::Style = (*ctx.style()).clone();
+        style.override_font_id = Some(egui::FontId {
+            size: 16.0,
+            family: egui::FontFamily::Monospace,
+        });
+        style.override_text_style = Some(egui::TextStyle::Monospace);
+        ctx.set_style(style);
     }
 
     /// Called by the frame work to save state before shutdown.
@@ -52,8 +98,6 @@ impl epi::App for TemplateApp {
     /// Called each time the UI needs repainting, which may be many times per second.
     /// Put your widgets into a `SidePanel`, `TopPanel`, `CentralPanel`, `Window` or `Area`.
     fn update(&mut self, ctx: &egui::Context, frame: &epi::Frame) {
-        let Self { label, value } = self;
-
         // Examples of how to create different panels and windows.
         // Pick whichever suits you.
         // Tip: a good default choice is to just keep the `CentralPanel`.
@@ -72,37 +116,34 @@ impl epi::App for TemplateApp {
 
         egui::SidePanel::left("side_panel").show(ctx, |ui| {
             ui.heading("Side Panel");
-
-            ui.horizontal(|ui| {
-                ui.label("Write something: ");
-                ui.text_edit_singleline(label);
-            });
-
-            ui.add(egui::Slider::new(value, 0.0..=10.0).text("value"));
-            if ui.button("Increment").clicked() {
-                *value += 1.0;
-            }
-
-            ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 0.0;
-                    ui.label("powered by ");
-                    ui.hyperlink_to("egui", "https://github.com/emilk/egui");
-                    ui.label(" and ");
-                    ui.hyperlink_to("eframe", "https://github.com/emilk/egui/tree/master/eframe");
-                });
-            });
         });
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            // The central panel the region left after adding TopPanel's and SidePanel's
+            let rect = ctx.available_rect();
 
-            ui.heading("eframe template");
-            ui.hyperlink("https://github.com/emilk/eframe_template");
-            ui.add(egui::github_link_file!(
-                "https://github.com/emilk/eframe_template/blob/master/",
-                "Source code."
-            ));
+            let painter = ui.painter_at(rect);
+
+            let mut iter = self.buffer.iter();
+            let mut current_string = "".to_string();
+            let mut last_char: Option<char> = None;
+            let mut current_line = 0usize;
+            while let Some(ch) = iter.next() {
+                if ch == '\r' {
+                    continue;
+                }
+                if ch == '\n' {
+                    if !last_char.is_none() {
+                        draw_line(&painter, &current_string, current_line, rect);
+                        current_string.clear();
+                        last_char = None;
+                    }
+                    current_line += 1;
+                    continue;
+                }
+                current_string.push(ch);
+                last_char = Some(ch);
+            }
+            draw_line(&painter, &current_string, current_line, rect);
             egui::warn_if_debug_build(ui);
         });
 
@@ -115,4 +156,34 @@ impl epi::App for TemplateApp {
             });
         }
     }
+}
+
+fn draw_line(painter: &egui::Painter, content: &str, linenumber: usize, rect: egui::Rect) {
+    let rect_after_ln = painter.text(
+        egui::Pos2 {
+            x: rect.min.x,
+            y: rect.min.y + (linenumber as f32) * 25.0, // TODO 字号设置
+        },
+        egui::Align2::LEFT_TOP,
+        linenumber,
+        egui::FontId {
+            size: 25.0,
+            family: FontFamily::Monospace,
+        },
+        egui::Color32::GRAY,
+
+    );
+    painter.text(
+        egui::Pos2 {
+            x: rect.min.x + 30.0,
+            y: rect.min.y + (linenumber as f32) * 25.0, // TODO 字号设置
+        },
+        egui::Align2::LEFT_TOP,
+        content,
+        egui::FontId {
+            size: 25.0,
+            family: FontFamily::Monospace,
+        },
+        egui::Color32::BLACK,
+    );
 }
